@@ -8,7 +8,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Sequence
 
 import httpx
-from openai import OpenAI
+from openai import APIError, APIStatusError, OpenAI
 
 
 @dataclass(frozen=True)
@@ -53,10 +53,27 @@ class InfraiKnowledgeClient:
         top_k: int = 2,
     ) -> list[RankedPassage]:
         texts = [question, *passages]
-        response = self._openai.embeddings.create(
-            model="text-embedding-3-small",
-            input=texts,
-        )
+        try:
+            response = self._openai.embeddings.create(
+                model="text-embedding-3-small",
+                input=texts,
+            )
+        except APIStatusError as exc:
+            body = exc.body if isinstance(exc.body, dict) else {}
+            error = body.get("error") if isinstance(body.get("error"), dict) else body
+            detail = dict(error)
+            detail.setdefault("message", str(exc))
+            raise InfraiError(
+                str(detail.get("code", "request_rejected")),
+                detail,
+                exc.status_code,
+            ) from exc
+        except APIError as exc:
+            raise InfraiError(
+                "embedding_request_failed",
+                {"message": str(exc)},
+                502,
+            ) from exc
         query_embedding = response.data[0].embedding
         passage_embeddings = [item.embedding for item in response.data[1:]]
         nearest = sorted(
